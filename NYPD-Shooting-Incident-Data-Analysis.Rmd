@@ -1,0 +1,218 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+author: "HB"
+date: "2024-02-21"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(zoo)
+library(dplyr)
+library(ggplot2) 
+```
+## Introduction
+This document reviews **NYPD Shooting Incident Data Report** based on a dataset retrieved from <https://catalog.data.gov/dataset> covering 2006 to 2023 reported incidents. The purpose of this Analysis is to gain more insight into the past 17 years of shooting incidents and to find potential trends that can be used for crime prediction and more.
+
+## Requirements
+The following libraries are used in this module:
+tidyverse,
+zoo,
+dplyr,
+ggplot2,
+
+## Importing the Data
+To keep this analysis reproducible, data is directly imported into the environment from **catalog.data.gov**.
+Since this dataset covers a lot of details. It needs to go through filtering and conditioning before analysis.  In the next few steps the dataset is prepared in a more plot friendly format.
+
+Here is a sample of the raw data:
+
+```{r import_data , echo=TRUE}
+data_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+raw_data <- read_csv(data_url, show_col_types = FALSE)
+head(raw_data,5)
+```
+
+## Basic filter to get the total cases per month
+
+Here the data is filtered to show a basic behavior of this set. The data set is filtered to plot the frequency of the cases at each month of the year. 
+
+```{r filter_by_month, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+filter_by_month <- table("date_mdy" = raw_data$OCCUR_DATE) %>% # Taking the frequency of the cases on each date
+  as.data.frame()
+
+filter_by_month$date_mdy <- mdy(filter_by_month$date_mdy)     # Set the date col format as myd date
+filter_by_month$year_month <- floor_date(filter_by_month$date_mdy,"month")
+filter_by_month_clean <- filter_by_month %>%                  # Filtering data for number of cases per month
+  group_by(year_month) %>%
+  dplyr::summarise("cases"=sum(Freq)) %>%
+  as.data.frame()
+
+head(filter_by_month_clean,5)
+```
+
+```{r filter_by_month_plot, echo=FALSE}
+
+ggplot(filter_by_month_clean, aes(year_month, cases)) + geom_line(color="grey")+
+  geom_point(shape=21, color="black", fill="#69b3a2", size=0.1)+
+  geom_line(aes(y=rollmean(cases, 12, na.pad=TRUE))) + # plot moving average
+  scale_x_date(date_breaks = "1 year", guide = guide_axis(angle = 90)) +
+  ggtitle("Plot 1 - NYPD Overall Shooting Cases Per Month (MA:12)") +
+  xlab("Month of Year") +
+  ylab("Number of Cases")
+
+```
+
+### Observation 1
+Looking at plot 1, it is shown that the number of reported shooting cases follow a pattern every year. At the start of each year the rate of reported shootings is relatively at its lowest. It then climbs up to the peak of the year at around June annually. 
+
+#### Potential Bias:
+- If some precincts try to reach a min or max number of cases per year, that could disturb the real behavior of this plot. 
+- During the end of year holiday, the number of reported incidents might be more that the true number of incidents due to various reasons such as lack of resources.
+
+
+### Observation 2
+Plot 1 also shows a gradual decay in the average number of cases up until 2019 with a sudden spike during 2020.
+
+## Including More Details in Analysis
+To continue the analysis in more depth, more details are added from the original dataset. In this case the perp sex is analysed to see if there is any significant pattern. 
+
+```{r filter_by_sex, echo=FALSE}
+
+filter_by_sex <- table("date_mdy" = raw_data$OCCUR_DATE, "perp_sex" = raw_data$PERP_SEX) %>% # Taking the frequency of the cases on each date
+  as.data.frame()
+
+filter_by_sex$date_mdy <- mdy(filter_by_sex$date_mdy)     # Set the date col format as myd date
+filter_by_sex$year_month <- floor_date(filter_by_sex$date_mdy,"month")
+filter_by_sex_m <- filter(filter_by_sex, perp_sex=="M")
+filter_by_sex_m_clean <- filter_by_sex_m %>%                  # Filtering data for number of cases per month
+  group_by(year_month) %>%
+  dplyr::summarise("cases"=sum(Freq)) %>%
+  as.data.frame()
+filter_by_sex_f <- filter(filter_by_sex, perp_sex=="F")
+filter_by_sex_f_clean <- filter_by_sex_f %>%                  # Filtering data for number of cases per month
+  group_by(year_month) %>%
+  dplyr::summarise("cases"=sum(Freq)) %>%
+  as.data.frame()
+
+filter_by_sex_clean <- merge(filter_by_sex_m_clean,filter_by_sex_f_clean, by="year_month")
+  
+  # pivot_longer(cols = c("cases.x", "cases.y"))
+
+colnames(filter_by_sex_clean)[2] <- "male"
+colnames(filter_by_sex_clean)[3] <- "female"
+
+filter_by_sex_clean <- pivot_longer(filter_by_sex_clean, cols = c("male", "female"), names_to = "gender", values_to = "cases")
+
+head(filter_by_sex_clean,5)
+
+ggplot(filter_by_sex_clean, aes(year_month, cases, group = gender, color = gender)) + geom_line()+
+  geom_point(shape=21, color="black", fill="#69b3a2", size=0.1)+
+  scale_x_date(date_breaks = "1 year", guide = guide_axis(angle = 90)) +
+  ggtitle("Plot 2 - NYPD Shooting Cases Per Month Based on Gender") +
+  xlab("Month of Year") +
+  ylab("Number of Cases")
+
+```
+
+### Observation 3
+Plot 2 illustrates a significant difference between the number of reported cases where the perp gender was reported as male versus female. 
+
+#### Potential Bias:
+- This analysis only relies on cases with identified gender. There is a significant number of cases with unidentified gender. This could simply disrupt any resolution of this analysis.
+
+## Pricincts Performance Analysis
+
+The dataset consist of the precinct in which the incident has been reported. In this section the incidint rates are illustrated to show the performance of each precinct. 
+
+```{r filter_by_precinct, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+filter_by_precinct <- table("precinct" = raw_data$PRECINCT) %>% # Taking the frequency of the cases on each date
+  as.data.frame()
+
+```
+
+```{r filter_by_precinct_plot, echo=FALSE}
+
+ggplot(filter_by_precinct, aes(x=precinct, y=Freq)) + 
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(size=7, angle=90, vjust=.5, hjust=1)) +
+  ggtitle("Plot 3 - NYPD Overall Shooting Cases Per Precinct") +
+  xlab("Precinct Number") +
+  ylab("Number of Cases")
+
+```
+
+### Observation 4
+On Plot 3, the overall number of reported incidents in each precinct is presented. Accordingly, the top three precinct with the highest number of reports are precinct 67, 73, and 74.
+
+#### Potential Bias:
+- The performance could have been drastically different over the years. Since this plot is looking at the over all data from 2006 to 2023 this could reduce the value of this observation.
+- Each precinct is located in a different neighborhood with varying crime rate. This reduces the accountability of this observation for the performance of each precinct. 
+
+\newpage
+## Deep Dive on the Pricincts with highest number of cases over the years
+
+Previously it was determined that precinct 75 has the highest number of reported incidents. In this section the performance of precinct 75 is analysed over the years. Here is an example of the first few month:
+```{r highest_incidents, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+filter_by_precinct <- table("date_mdy" = raw_data$OCCUR_DATE, "precinct" = raw_data$PRECINCT) %>% 
+  as.data.frame()
+
+filter_by_precinct$date_mdy <- mdy(filter_by_precinct$date_mdy)     # Set the date col format as myd date
+filter_by_precinct$year_month <- floor_date(filter_by_precinct$date_mdy,"month")
+filter_by_precinct_75 <- filter(filter_by_precinct, precinct=="75")
+filter_by_precinct_75_clean <- filter_by_precinct_75 %>%                  # Filtering data for number of cases per month
+  group_by(year_month) %>%
+  dplyr::summarise("cases"=sum(Freq)) %>%
+  as.data.frame()
+
+head(filter_by_precinct_75_clean,5)
+
+
+```
+
+```{r highest_incidents_plot, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+ggplot(filter_by_month_clean, aes(year_month, cases)) + geom_line(color="grey")+
+  geom_point(shape=21, color="black", fill="#69b3a2", size=0.1)+
+  geom_line(aes(y=rollmean(cases, 12, na.pad=TRUE))) + # plot moving average
+  scale_x_date(date_breaks = "1 year", guide = guide_axis(angle = 90)) +
+  ggtitle("Plot 4 - Precinct #75 Shooting Cases Per Month (MA:12)") +
+  xlab("Month of Year") +
+  ylab("Number of Cases")
+
+```
+
+### Observation 5
+
+Previously it was determined that precinct 75 has the highest number of incidents reported. On Plot 4, the number of reported incidents at precinct 75 is presented. Comparing this to the overall cases on plot 1, it can be shown precinct 75 is following the overall trend of frequency of incidents as the rest of the precincts.
+
+## Perpetrators Age Regression Model
+
+By fitting a regression curve through the frequency of each age group we can predict the likelihood of incident rate. This observation can help with crime prediction plannings for different ages. 
+```{r age_model, echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+filter_by_age <- table("age" = raw_data$PERP_AGE_GROUP) %>% # Taking the frequency of the cases on each date
+  as.data.frame()
+
+filter_by_age <- filter_by_age[ !(filter_by_age$age %in% c("UNKNOWN","1020","224","940","(null)")), ]
+filter_by_age$age <- c(18,21,34,54,65)
+
+ggplot(filter_by_age, aes(age, Freq))+
+  geom_point(shape=21, color="black", fill="#69b3a2", size=2)+
+  geom_smooth()
+
+```
+
+## Conclusion
+
+As pointed out through the observations, there are some dominant trends as diving into the NYPD shooting incident reports. Relying on these trends can help with crime rate prediction and resource allocation. As an instance, combining observations 1 and 4, it can be concluded that certain precinct need more resources and the peak time for this need is around the midyear. Through a smarter system, using this analysis, the resources among different precincts can be distributed in a more efficient way.
