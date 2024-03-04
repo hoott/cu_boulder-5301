@@ -1,0 +1,197 @@
+---
+title: "5301_project_2"
+author: "HB"
+date: "2024-03-03"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+library(tidyverse)
+library(zoo)
+library(dplyr)
+library(ggplot2) 
+library(lubridate)
+library(tidyr)
+```
+## Introduction
+This document reviews **COVID19 Data Report** based on a dataset retrieved from Johns Hopkins University data repository.The purpose of this document is to review the Covid19 data and produce educational visuals and models. The general trend of change in the number of cases and deaths are analysed throughout 2020-2023 followed by a deep dive into the states of Washington and California. Finally, the relationship between the population is analyzed to create a predictionb model.
+
+## Requirements
+The following libraries are used in this module:
+tidyverse,
+zoo,
+dplyr,
+ggplot2,
+
+## Importing the Data
+To keep this analysis reproducible, data is directly imported into the environment from the source repository.
+Since this dataset covers a lot of details. It needs to go through filtering and conditioning before analysis. In the next few steps the dataset is prepared in a more plot friendly format. Here is a sample of unfiltered data of US cases:
+
+```{r import_data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in, file_names)
+US_cases <- read_csv(urls[1])
+US_deaths <- read_csv(urls[2])
+head(US_cases,5)
+```
+As shown above, the raw data is not much plot friendly, thus to get a cleaner data the following steps are done:
+- Removing unnecessary columns "Lat" and "Long"
+- Pivoting the date columns
+- Merging overall cases along with the number of deaths
+- Removing data for dates with zero cases to keep the focus on the more valuable data
+Here is a snapshot of the cleaned US cases and death data:
+
+```{r clean_data_us , echo=FALSE}
+US_cases_clean <- US_cases %>% 
+  select(-(UID:FIPS)) %>% 
+  select(-(Country_Region:Combined_Key)) %>% 
+  pivot_longer(cols = -c(Admin2, Province_State),
+               names_to = "date",
+               values_to = "cases") %>%
+  mutate(date = mdy(date)) %>%
+  drop_na()
+
+US_deaths_clean <- US_deaths %>%
+  select(-(UID:FIPS)) %>% 
+  select(-(Country_Region:Combined_Key)) %>% 
+  pivot_longer(cols = -c(Admin2, Province_State, Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  mutate(date = mdy(date)) %>%
+  drop_na()
+
+
+US_all_clean <- US_cases_clean %>%
+  full_join(US_deaths_clean) %>%
+  filter(cases>0)
+
+head(US_all_clean,5)
+summary(US_all_clean)
+```
+
+
+### Check Data Validity
+Looking at the summary for the US_all_clean, it is surprisingly shown that the minimum number of deaths are negative on the US data set. Therefore a filer is applied to remove the invalid chunk of data. Checking the summary as shown below:
+
+```{r check_validity , echo=FALSE}
+US_all_clean <- US_all_clean %>%
+  filter(deaths>-1) %>%
+  filter(Population>0)
+summary(US_all_clean)
+```
+When looking at the number of cases and deaths an important reference is the population on which this data has been retrieved. Thus comparing data without knowing the population is not valid. Fortunately the population data was already included in US deaths.
+
+At this point the data is imported, cleaned, and validated. Therefore it is ready for analysis and modeling.
+
+### Analyzing the US cases and Death
+As mentioned before, to have a valid comparison among the number of cases or number of death between different areas, those numbers need to be unified based on the population. This can be done by looking at cases per million population as shown below.
+
+```{r US_by_state}
+US_by_state <- US_all_clean %>%
+    group_by(Province_State, date) %>%
+    summarize(cases= sum(cases), deaths= sum(deaths), Population= sum(Population)) %>%
+    mutate(deaths_per_mill= deaths* 1000000 / Population) %>%
+    mutate(cases_per_mill= cases* 1000000 / Population) %>%
+    ungroup()
+head(US_by_state,5)
+
+US_totals <- US_all_clean %>%
+    group_by(date) %>%
+    summarize(cases= sum(cases), deaths= sum(deaths), Population= sum(Population)) %>%
+    mutate(deaths_per_mill= deaths * 1000000 / Population) %>%
+    mutate(cases_per_mill= cases* 1000000 / Population) %>%
+    select(date,cases,deaths, cases_per_mill, deaths_per_mill, Population) %>%
+    ungroup()
+head(US_totals,5)
+```
+```{r US_totals_visuals}
+US_totals %>%
+    filter(cases_per_mill > 0) %>%
+    ggplot(aes(x = date, y= cases_per_mill)) +
+    geom_line(aes(color= "cases_per_mill")) +
+    geom_point(aes(color= "cases_per_mill")) +
+    geom_line(aes(y= deaths_per_mill, color= "deaths_per_mill")) +
+    geom_point(aes(y= deaths_per_mill, color= "deaths_per_mill")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = "Figure 1 - COVID19 Reporded Cases and Deaths in US", y= "population")
+```
+As shown in figure 1, the total number of cases and deaths in US can simply be viewed over the tears. The main observation here is the big spike of the the growing number of cases during 2020 which plateaus by end of 2022. This could indicate the some measures that were implemented in US have been successful in controlling the increasing spread.
+
+Looking more closely into the state of Washington and California:
+```{r US_WA_CA_visuals}
+wa_cases <- US_by_state %>%
+    filter(Province_State == "Washington")
+ca_cases <- US_by_state %>%
+    filter(Province_State == "California")
+wa_ca <- wa_cases %>%
+  left_join(ca_cases,by=c("date"))%>%
+  rename(WA_deaths_per_mill = `deaths_per_mill.x`, WA_cases_per_mill = `cases_per_mill.x`)%>%
+  rename(CA_deaths_per_mill = `deaths_per_mill.y`, CA_cases_per_mill = `cases_per_mill.y`)
+wa_ca            
+wa_ca %>%
+    ggplot(aes(x = date, y= WA_cases_per_mill)) +
+    geom_line(aes(color= "WA_cases_per_mill")) +
+    geom_point(aes(color= "WA_cases_per_mill")) +
+    geom_line(aes(y= WA_deaths_per_mill, color= "WA_deaths_per_mill")) +
+    geom_point(aes(y= WA_deaths_per_mill, color= "WA_deaths_per_mill")) +
+    geom_line(aes(y= CA_cases_per_mill, color= "CA_cases_per_mill")) +
+    geom_point(aes(y= CA_cases_per_mill, color= "CA_cases_per_mill")) +
+    geom_line(aes(y= CA_deaths_per_mill, color= "CA_deaths_per_mill")) +
+    geom_point(aes(y= CA_deaths_per_mill, color= "CA_deaths_per_mill")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = "Figure 2 - COVID19 Reporded Cases and Deaths in WA and CA", y= "population")
+
+```
+
+Figure 2 compares the number of cases and deaths in states of California and Washington. It can be shown that both states are following a similar trend similar to the overall US cases. However, it can be pointed that Washington had a more gradual increase. This can be later studied based on the different measured deployed in each state.
+
+\newpage
+### Modeling the relationship between the total death and the population of states
+
+First visualizing the existing data by summing all the death for each state
+
+```{r filter_by_month, echo=FALSE}
+state_max <- US_by_state %>% 
+  group_by(Province_State) %>% 
+  slice_max(cases, with_ties = FALSE) %>% 
+  ungroup() %>% 
+  select(c(Province_State,cases,deaths, Population))
+
+state_max %>%
+    ggplot(aes(x = Population, y= deaths)) +
+    geom_point(aes(color= "deaths")) +
+    labs(title = "Figure 3 - COVID19 Deaths Compared to State Population", y= "Deaths")
+    
+```
+
+As shown in figure 3, there is a linear relation between the population of each state and the total number of deaths. Thus a linear model is created to predict the number of deaths based on any population.
+```{r us_cases_linear_mod}
+mod <- lm(deaths ~ Population, data = state_max)
+summary(mod)
+state_max <- state_max %>% mutate(death_pred = predict(mod))
+head(state_max,5)
+
+state_max %>%
+    ggplot(aes(x = Population, y= deaths)) +
+    geom_point(aes(color= "deaths")) +
+    geom_point(aes(y= death_pred, color= "death_pred")) +
+    geom_line(aes(y= death_pred, color= "death_pred")) +
+    labs(title = "Figure 4 - COVID19 Death Prediction Model", y= "Deaths")
+```
+
+## Conclusion
+
+By looking through the overall cases across US, figure 1 illustrated the general trend of number of cases followed by number of deaths. Further, by looking into the states of California and Washington a similar behavior was observed but in addition to the main trend, each state seems to have handled the Covid-19 experience differently at the start. Since Washington had a more gradual increase in both number of cases and deaths, the root cause can be studied as a potential successful measure for preventing such a disease in future. Finally, figure 4 has shown a prediction model for number of deaths based on the population. This model could be used to estimate any other population based on the prediction line. 
+
+
+
